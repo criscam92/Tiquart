@@ -1,0 +1,16 @@
+[Unit]
+Description=Tiquart public tunnel (localhost.run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=cristian
+WorkingDirectory=/home/cristian/projects/Tiquart
+ExecStart=/usr/bin/bash /home/cristian/projects/Tiquart/scripts/ssh-tunnel.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

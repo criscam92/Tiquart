@@ -1,0 +1,250 @@
+name: tiquart
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: tiquart
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tiquart}
+      POSTGRES_DB: tiquart
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - max_connections=60
+    volumes:
+      - db_data:/var/lib/postgresql
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tiquart -d tiquart"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  cache:
+    image: valkey/valkey:9-alpine
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "allkeys-lru"]
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://tiquart:${POSTGRES_PASSWORD:-tiquart}@db:5432/tiquart
+      REDIS_URL: redis://cache:6379/0
+      MQTT_HOST: mosquitto
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    expose:
+      - "8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  web:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE: /api
+    expose:
+      - "3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  traefik:
+    image: traefik:v3.7
+    command:
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --log.level=INFO
+      - --accesslog=true
+      - --accesslog.format=json
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/traefik:/etc/traefik/dynamic:ro
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+  # ---------- túnel público de respaldo ----------
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://traefik:80"]
+    depends_on:
+      - traefik
+    restart: unless-stopped
+
+  # ---------- carga ----------
+  k6:
+    image: grafana/k6:latest
+    profiles: ["load"]
+    environment:
+      API_BASE: http://api:8000
+    volumes:
+      - ./load:/scripts:ro
+    command: ["run", "/scripts/k6-seats.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ---------- observabilidad ----------
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["obs"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["obs"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-tiquart}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tiquart.json
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    profiles: ["obs"]
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    profiles: ["obs"]
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro
+    expose:
+      - "9100"
+    restart: unless-stopped
+
+  # ---------- rúbrica sistemas distribuidos ----------
+  portainer:
+    image: portainer/portainer-ce:latest
+    profiles: ["rubric"]
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    restart: unless-stopped
+
+  glances:
+    image: nicolargo/glances:latest-full
+    profiles: ["rubric"]
+    pid: host
+    environment:
+      # Glances 4.x: el web UI no pide login si no defines usuario/password.
+      GLANCES_OPT: "-w"
+    ports:
+      - "127.0.0.1:61208:61208"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/host:ro
+    restart: unless-stopped
+
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:latest
+    profiles: ["rubric"]
+    environment:
+      WG_HOST: ${WG_HOST:-demo.tiquart.local}
+      INIT_USERNAME: admin
+      INIT_PASSWORD: ${WG_PASSWORD:-tiquart}
+    ports:
+      - "51820:51820/udp"
+      - "127.0.0.1:51821:51821"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - wg_data:/etc/wireguard
+    restart: unless-stopped
+
+  samba:
+    image: dperson/samba:latest
+    profiles: ["rubric"]
+    # Usuario/contraseña de demo para que la carpeta se pueda montar desde Windows.
+    command: ["-u", "tiquart;tiquart", "-s", "Compartido;/mount/compartido;yes;no;no;tiquart;none"]
+    # Windows (LanmanServer) ya ocupa 139/445 con networking espejado.
+    # Publicamos en 1139/1445; dentro del contenedor SMB sigue en 139/445.
+    ports:
+      - "1139:139"
+      - "1445:445"
+    volumes:
+      - ./infra/samba/share:/mount/compartido
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  prom_data:
+  grafana_data:
+  portainer_data:
+  wg_data:

@@ -1,0 +1,98 @@
+# Entorno y secretos locales
+.env
+.env.local
+.env.*.local
+.tunnel-url
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+.next-env.d.ts
+.pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+npm-debug.log*
+
+# Docker
+*.tar
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Testing
+coverage/
+test-results/
+.playwright/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Sistema
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Archivos temporales
+*.tmp
+*.temp
+.cache/
+.sass-cache/
+
+# Archivos generados
+repomix-output.xml
+*.bundle
+mongo-data/
+postgres-data/
+redis-data/
+pgadmin/
+portainer_data/
+grafana_data/
+prometheus_data/
+loki_data/
+mosquitto_data/
+traefik/acme.json
+
+# Certificados/TLS
+acme.json
+*.csr
+
+# SSH
+.ssh/
+id_rsa
+id_ed25519
+known_hosts
+
+# Otros
+*.bak
+*.old
+*~
+
